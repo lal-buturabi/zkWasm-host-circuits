@@ -83,6 +83,7 @@ impl<const DEPTH: usize> MongoMerkle<DEPTH> {
         let cache_key = get_cache_key(cname.clone(), index, hash);
         let mut cache = MERKLE_CACHE.lock().unwrap();
         if let Some(record) = cache.get(&cache_key) {
+            //println!("get_record get from cach: index {:?}, hash {:?}", index, hash);
             Ok(Some(record.clone()))
         } else {
             let collection = db::get_collection::<MerkleRecord>(dbname, cname)?;
@@ -91,8 +92,10 @@ impl<const DEPTH: usize> MongoMerkle<DEPTH> {
             filter.insert("hash", bytes_to_bson(hash));
             let record = collection.find_one(filter, None);
             if let Ok(Some(value)) = record.clone() {
+                //println!("get_record find in db and get: index {:?}, hash {:?}", index, hash);
                 cache.push(cache_key, value);
             };
+            //println!("Record not pre exist: index {:?}, hash {:?}", index, hash);
             record
         }
     }
@@ -109,6 +112,7 @@ impl<const DEPTH: usize> MongoMerkle<DEPTH> {
         //Check Cache first
         let mut cache = MERKLE_CACHE.lock().unwrap();
         for record in records.iter() {
+            //println!("Try batch get records: index {:?} hash {:?}", &record.index, &record.hash);
             let cache_key = get_cache_key(cname.clone(), record.index, &record.hash);
             if let Some(r) = cache.get(&cache_key) {
                 find.push(r.clone());
@@ -116,11 +120,18 @@ impl<const DEPTH: usize> MongoMerkle<DEPTH> {
             }
         }
 
+        println!(
+            "Batch_get_record records size is: {:?}, not find size in cache is : {:?}",
+            records.len(),
+            notfind.len()
+        );
+
         if notfind.len() > 0 {
             //Check DB
             let mut find_in_db_only: Vec<MerkleRecord> = vec![];
             let mut docs: Vec<mongodb::bson::Document> = vec![];
             for record in notfind.iter() {
+                println!("record is not find for cache, try search it in db. index {:?}, hash{:?}", &record.index, &record.hash);
                 let mut and_doc: Vec<mongodb::bson::Document> = vec![];
                 and_doc.push(doc! {"index": record.index});
                 and_doc.push(doc! {"hash": bytes_to_bson(&record.hash)});
@@ -135,11 +146,13 @@ impl<const DEPTH: usize> MongoMerkle<DEPTH> {
 
             while let Some(record) = cursor.next() {
                 let r = record.unwrap();
-                println!("find in db only{:?}", r.index);
+                println!("find in db only. Index: {:?} hash:{:?}", &r.index, &r.hash);
                 find.push(r.clone());
                 find_in_db_only.push(r.clone());
-                notfind.remove(notfind.iter().position(|x| x.clone() == r.clone()).unwrap());
+                notfind.remove(notfind.iter().position(|x: &MerkleRecord| x.clone() == r.clone()).unwrap());
             }
+
+            println!("DB not find size in cache is : {:?}", notfind.len());
 
             //Update Cache
             for record in find_in_db_only.iter() {
@@ -155,6 +168,7 @@ impl<const DEPTH: usize> MongoMerkle<DEPTH> {
         let dbname = Self::get_db_name();
         let cname = self.get_collection_name();
         let collection = db::get_collection::<MerkleRecord>(dbname, cname.clone())?;
+        println!("update_record try to get: index {:?}, hash {:?}", &record.index, &record.hash);
         let exists: Result<Option<MerkleRecord>, mongodb::error::Error> =
             self.get_record(record.index, &record.hash);
         //println!("record is none: {:?}", exists.as_ref().unwrap().is_none());
@@ -163,7 +177,7 @@ impl<const DEPTH: usize> MongoMerkle<DEPTH> {
             |r: Option<MerkleRecord>| {
                 r.map_or_else(
                     || {
-                        //println!("Do update record to DB for index {:?}, hash: {:?}", record.index, record.hash);
+                        println!("Do update record to DB for index {:?}, hash: {:?}", record.index, record.hash);
                         let cache_key = get_cache_key(cname, record.index, &record.hash);
                         let mut cache = MERKLE_CACHE.lock().unwrap();
                         cache.push(cache_key, record.clone());
@@ -184,16 +198,17 @@ impl<const DEPTH: usize> MongoMerkle<DEPTH> {
         let cname = self.get_collection_name();
         let collection = db::get_collection::<MerkleRecord>(dbname, cname.clone())?;
         let (_, new_records) = self.batch_get_records(&records)?;
-        /*
+        
         println!(
-            "records size is: {:?}, new record size is : {:?}",
+            "Batch_update_record records size is: {:?}, new record size is : {:?}",
             records.len(),
             new_records.len()
-        );*/
+        );
 
         if new_records.len() > 0 {
             let mut cache = MERKLE_CACHE.lock().unwrap();
             for record in new_records.iter() {
+                //println!("Try batch update records: index {:?} hash {:?}", &record.index, &record.hash);
                 let cache_key = get_cache_key(cname.clone(), record.index, &record.hash);
                 cache.push(cache_key, record.clone());
             }
@@ -638,4 +653,82 @@ mod tests {
             _test_mongo_merkle_multi_leaves_update(5);
         }
     }
+
+    #[test]
+    /* Test cache hit with small cache size
+     * _test_mongo_merkle_multi_leaves_update will create 63 nodes in cache and db. 
+     * Just set cache size to small size to test
+     * Please note this unit test functionable when run it individually, or the cache may be init by other tests depends on unit tests running order.
+     */
+    fn test_update_same_leave_twice() {
+        // Init checking results
+        const DEPTH: usize = 20;
+        const TEST_ADDR: [u8; 32] = [2; 32];
+        const INDEX1: u32 = 2_u32.pow(DEPTH as u32) - 1;
+        const LEAF1_DATA: [u8; 32] = [
+            0, 16, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0,
+        ];
+
+        const LEAF1_DATA_2: [u8; 32] = [
+            0, 29, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0,
+        ];
+
+        const LEAF1_DATA_3: [u8; 32] = [
+            0, 16, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0,
+        ];
+
+        // 1
+        let mut mt = MongoMerkle::<DEPTH>::construct(TEST_ADDR, DEFAULT_HASH_VEC[DEPTH].clone());
+        let dbname: String = MongoMerkle::<DEPTH>::get_db_name();
+        let cname = mt.get_collection_name();
+        let collection = get_collection::<MerkleRecord>(dbname, cname).unwrap();
+        let _ = collection.delete_many(doc! {}, None);
+
+        // 2
+        println!("-------------------Begin set leaf value first time 16");
+        let (mut leaf, _) = mt.get_leaf_with_proof(INDEX1).unwrap();
+        leaf.set(&LEAF1_DATA.to_vec());
+        mt.set_leaf_with_proof(&leaf).unwrap();
+
+        println!("-------------------Begin get leaf value first time 16");
+        let (leaf, _) = mt.get_leaf_with_proof(INDEX1).unwrap();
+        assert_eq!(leaf.index, INDEX1);
+        assert_eq!(leaf.data, LEAF1_DATA);
+
+        //3 
+        println!("----------------Begin set leaf value second time 29");
+        let (mut leaf, _) = mt.get_leaf_with_proof(INDEX1).unwrap();
+        leaf.set(&LEAF1_DATA_2.to_vec());
+        mt.set_leaf_with_proof(&leaf).unwrap();
+
+        println!("----------------Begin get leaf value second time 29");
+        let (leaf, _) = mt.get_leaf_with_proof(INDEX1).unwrap();
+        assert_eq!(leaf.index, INDEX1);
+        assert_eq!(leaf.data, LEAF1_DATA_2);
+
+        //4 
+        println!("-------------Begin set leaf value third time 16");
+        let (mut leaf, _) = mt.get_leaf_with_proof(INDEX1).unwrap();
+        leaf.set(&LEAF1_DATA_3.to_vec());
+        mt.set_leaf_with_proof(&leaf).unwrap();
+
+        println!("-------------Begin get leaf value third time 16");
+        let (leaf, _) = mt.get_leaf_with_proof(INDEX1).unwrap();
+        assert_eq!(leaf.index, INDEX1);
+        assert_eq!(leaf.data, LEAF1_DATA_3);
+
+
+        // 5
+        let a = mt.get_root_hash();
+        let mut mt = MongoMerkle::<DEPTH>::construct(TEST_ADDR, a);
+        assert_eq!(mt.get_root_hash(), a);
+        let (leaf, proof) = mt.get_leaf_with_proof(INDEX1).unwrap();
+        assert_eq!(leaf.index, INDEX1);
+        assert_eq!(leaf.data, LEAF1_DATA_3);
+        assert_eq!(mt.verify_proof(proof).unwrap(), true);
+    }
+
 }
