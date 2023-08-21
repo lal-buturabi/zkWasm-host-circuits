@@ -43,7 +43,7 @@ impl<F: FieldExt> Number<F> {
         let limb2 = bn
             .div(BigUint::from(1u128 << 108))
             .div(BigUint::from(1u128 << 108));
-        let native = bn.div(field_to_bn(&(-F::one()))) + BigUint::from(1u128);
+        let native = bn % (field_to_bn(&(-F::one())) + BigUint::from(1u128));
         Number {
             limbs: [
                 Limb::new(None, bn_to_field(&limb0)),
@@ -180,33 +180,35 @@ impl<F: FieldExt> ModExpChip<F> {
         rem: &Number<F>,
         lhs: &Number<F>,
         rhs: &Number<F>,
+        modulus: &Number<F>,
+        quotient: &Number<F>,
     ) -> Result<Limb<F>, Error> {
-        let l = self.config.assign_line(
+        let rem = self.config.assign_line(
             region,
             range_check_chip,
             offset,
             [
-                None,
+                Some(modulus.limbs[3].clone()),
                 Some(lhs.limbs[3].clone()),
                 Some(rhs.limbs[3].clone()),
+                Some(quotient.limbs[3].clone()),
                 Some(rem.limbs[3].clone()),
-                None,
                 None,
             ],
             [
+                None,
                 None,
                 None,
                 None,
                 Some(-F::one()),
                 None,
-                None,
-                None,
-                None,
+                Some(-F::one()),
                 Some(F::one()),
+                None,
             ],
             0,
         )?;
-        Ok(l[2].clone())
+        Ok(rem[4].clone())
     }
 
     fn mod_power108m1(
@@ -572,7 +574,16 @@ impl<F: FieldExt> ModExpChip<F> {
             vec![mod_216_lhs, mod_216_rhs, mod_216_rem],
             vec![F::one(), -F::one(), -F::one()],
         )?;
-        let mod_native = self.mod_native_mul(region, range_check_chip, offset, &rem, &lhs, &rhs)?;
+        let mod_native = self.mod_native_mul(
+            region,
+            range_check_chip,
+            offset,
+            &rem,
+            &lhs,
+            &rhs,
+            &modulus,
+            &quotient
+        )?;
         Ok(Number {
             limbs: [r0, r1, r2, mod_native],
         })
