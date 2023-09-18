@@ -13,8 +13,12 @@ use halo2_proofs::circuit::{Layouter, Region};
 use halo2_proofs::pairing::bn256::Fr;
 use halo2_proofs::plonk::ConstraintSystem;
 use halo2_proofs::plonk::{Error, Expression, VirtualCells, Column, Advice};
+use rayon::prelude::IntoParallelRefMutIterator;
 use crate::adaptor::get_selected_entries;
 use crate::circuits::host::{HostOpConfig, HostOpSelector};
+
+use rayon::iter::IndexedParallelIterator;
+use rayon::iter::ParallelIterator;
 
 use crate::utils::Limb;
 
@@ -199,17 +203,36 @@ impl HostOpSelector for PoseidonChip<Fr, 9, 8> {
                 let timer = start_timer!(|| "assign");
                 let config = self.config.clone();
                 self.initialize(&config, &mut region, &mut local_offset)?;
-                for arg_group in arg_cells.chunks_exact(10).into_iter() {
+                let start_offset = local_offset;
+                println!("start {}", start_offset);
+                let (first, remain) = arg_cells.split_at(10);
+                let args = first.into_iter().map(|x| x.clone());
+                let args = args.collect::<Vec<_>>();
+                self.assign_permute(
+                    &mut region,
+                    &mut local_offset,
+                    &args[1..9].to_vec().try_into().unwrap(),
+                    &args[0],
+                    &args[9],
+                )?;
+                let delta_offset = local_offset;
+                println!("delta {}", delta_offset - start_offset);
+                remain.chunks_exact(10)
+                .collect::<Vec<_>>()
+                .par_iter_mut()
+                .enumerate()
+                .for_each(|(i, arg_group)| {
+                    let mut par_offset = local_offset + i*delta_offset;
                     let args = arg_group.into_iter().map(|x| x.clone());
                     let args = args.collect::<Vec<_>>();
                     self.assign_permute(
                         &mut region,
-                        &mut local_offset,
+                        &mut par_offset,
                         &args[1..9].to_vec().try_into().unwrap(),
                         &args[0],
                         &args[9],
-                    )?;
-                }
+                    ).unwrap();
+                });
                 end_timer!(timer);
                 Ok(local_offset)
             },
