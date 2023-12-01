@@ -26,7 +26,7 @@ use crate::utils::Limb;
 use crate::host::{ExternalHostCallEntry, ForeignInst};
 
 const TOTAL_CONSTRUCTIONS_PAIR: usize = 1;
-const TOTAL_CONSTRUCTIONS_SUM: usize = 32;
+const TOTAL_CONSTRUCTIONS_SUM: usize = 64;
 
 fn bn256_fr_default(op: ForeignInst) -> Vec<ExternalHostCallEntry> {
     let mut r = vec![];

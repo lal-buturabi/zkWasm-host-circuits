@@ -14,8 +14,8 @@ use serde::{
     de::{Error, Unexpected},
     Deserialize, Deserializer, Serialize, Serializer,
 };
-use std::cell::RefCell;
-use std::rc::Rc;
+
+use std::sync::{Arc, Mutex};
 
 fn deserialize_u64_as_binary<'de, D>(deserializer: D) -> Result<u64, D::Error>
 where
@@ -68,7 +68,7 @@ where
 pub struct MongoMerkle<const DEPTH: usize> {
     root_hash: [u8; 32],
     default_hash: Vec<[u8; 32]>,
-    db: Rc<RefCell<dyn TreeDB>>,
+    db: Arc<Mutex<dyn TreeDB>>,
 }
 
 pub fn drop_collection<T>(database: String, name: String) -> Result<(), mongodb::error::Error> {
@@ -96,7 +96,7 @@ impl<const DEPTH: usize> MongoMerkle<DEPTH> {
         if let Some(record) = cache.get(&(index, *hash)) {
             Ok(record.clone())
         } else {
-            let record = self.db.borrow().get_merkle_record(index, hash);
+            let record = self.db.lock().unwrap().get_merkle_record(index, hash);
             if let Ok(value) = record.clone() {
                 cache.push((index, *hash), value);
             };
@@ -117,7 +117,7 @@ impl<const DEPTH: usize> MongoMerkle<DEPTH> {
                         //println!("Do update record to DB for index {:?}, hash: {:?}", record.index, record.hash);
                         let mut cache = MERKLE_CACHE.lock().unwrap();
                         cache.push((record.index, record.hash), Some(record.clone()));
-                        self.db.borrow_mut().set_merkle_record(record)?;
+                        self.db.lock().unwrap().set_merkle_record(record)?;
                         Ok(())
                     },
                     |_| Ok(()),
@@ -158,7 +158,7 @@ impl<const DEPTH: usize> MongoMerkle<DEPTH> {
             for record in new_records.iter() {
                 cache.push((record.index, record.hash), Some(record.clone()));
             }
-            self.db.borrow_mut().set_merkle_records(&new_records)?;
+            self.db.lock().unwrap().set_merkle_records(&new_records)?;
         }
         Ok(())
     }
@@ -336,11 +336,11 @@ impl<const DEPTH: usize> MerkleTree<[u8; 32], DEPTH> for MongoMerkle<DEPTH> {
     type Root = [u8; 32];
     type Node = MerkleRecord;
 
-    fn construct(addr: Self::Id, root: Self::Root, db: Option<Rc<RefCell<dyn TreeDB>>>) -> Self {
+    fn construct(addr: Self::Id, root: Self::Root, db: Option<Arc<Mutex<dyn TreeDB>>>) -> Self {
         MongoMerkle {
             root_hash: root,
             default_hash: (*DEFAULT_HASH_VEC).clone(),
-            db: db.unwrap_or_else(|| Rc::new(RefCell::new(MongoDB::new(addr)))),
+            db: db.unwrap_or_else(|| Arc::new(Mutex::new(MongoDB::new(addr)))),
         }
     }
 
